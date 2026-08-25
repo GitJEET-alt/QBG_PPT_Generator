@@ -23,12 +23,16 @@ CROP_PAD_PX = 20
 
 EMU_PER_INCH = 914400
 
-# Target width (inches) for the median-width image in a batch; used to
-# derive one fixed pixel-to-EMU scale applied to every image, instead of
-# stretching each one to fill a fixed box. Width tracks a screenshot's
-# capture zoom (and so its font size) far more reliably than height,
-# which instead tracks how much text a given question wraps to.
-REFERENCE_WIDTH_INCHES = 6.26
+INK_ROW_THRESHOLD = 180
+MIN_BAND_PX = 3
+MAX_BAND_PX = 60
+
+# Target height (inches) for a typical text line, measured directly from
+# each image's own pixel content (see estimate_line_height_px). Used to
+# derive one fixed pixel-to-EMU scale applied to every image in a batch,
+# instead of stretching each one to fill a fixed box or inferring font
+# size indirectly from overall image width/height.
+TARGET_LINE_HEIGHT_INCHES = 0.272
 # ---------------------------
 
 
@@ -264,6 +268,36 @@ def find_src_path(idx, src_basename):
     return None
 
 
+def estimate_line_height_px(cleaned_rgba):
+    """
+    Estimate a typical text-line pixel height by scanning for horizontal
+    bands of dark ("ink") pixels, separated by near-blank rows. This reads
+    the actual rendered font size from the image content, rather than
+    inferring it indirectly from the image's overall width or height.
+    """
+    gray = np.array(cleaned_rgba.convert("L"))
+    ink_rows = (gray < INK_ROW_THRESHOLD).sum(axis=1) > 2
+
+    bands = []
+    in_band = False
+    start = 0
+
+    for y, has_ink in enumerate(ink_rows):
+        if has_ink and not in_band:
+            in_band = True
+            start = y
+        elif not has_ink and in_band:
+            in_band = False
+            bands.append(y - start)
+
+    if in_band:
+        bands.append(len(ink_rows) - start)
+
+    bands = [b for b in bands if MIN_BAND_PX <= b <= MAX_BAND_PX]
+
+    return statistics.median(bands) if bands else None
+
+
 def clean_image(image_path):
     """Load, remove white background, and crop to content."""
     with Image.open(image_path) as im:
@@ -435,9 +469,10 @@ if st.button("🚀 Generate PPT"):
                         if src_path and src_path not in cleaned_cache:
                             cleaned_cache[src_path] = clean_image(src_path)
 
-                widths = [img.size[0] for img in cleaned_cache.values() if img.size[1] > 0]
-                reference_width = statistics.median(widths) if widths else 1
-                scale = (REFERENCE_WIDTH_INCHES * EMU_PER_INCH) / reference_width
+                line_heights = [estimate_line_height_px(img) for img in cleaned_cache.values()]
+                line_heights = [h for h in line_heights if h]
+                reference_line_height = statistics.median(line_heights) if line_heights else 20
+                scale = (TARGET_LINE_HEIGHT_INCHES * EMU_PER_INCH) / reference_line_height
 
                 for row_position, row, question_src_path, solution_src_path in resolved_rows:
                     if include_solutions:
