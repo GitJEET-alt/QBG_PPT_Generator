@@ -1,7 +1,7 @@
 import io
 import os
 import re
-import math
+import statistics
 import zipfile
 import tempfile
 
@@ -21,8 +21,10 @@ OUTPUT_PPTX_NAME = "QuestionPPT.pptx"
 WHITE_THRESHOLD = 240
 CROP_PAD_PX = 20
 
-# Target occupancy of slide area (30% to 35%)
-TARGET_FRACTION = 0.25
+# Fraction of slide height the median-complexity image in a batch should
+# occupy; used to derive one fixed pixel-to-EMU scale applied to every
+# image, instead of stretching each one to fill a fixed box.
+REFERENCE_HEIGHT_FRACTION = 0.35
 # ---------------------------
 
 
@@ -146,25 +148,19 @@ def find_anchor_on_slide(slide, name):
     return None
 
 
-def compute_size_for_area_fraction(slide_w, slide_h, left, top, aspect, target_fraction):
+def compute_fixed_scale_size(width_px, height_px, scale, max_w, max_h):
     """
-    Compute (w,h) in EMU for picture aspect ratio (w/h),
-    target area = target_fraction * slide_area,
-    clamped to remain on-slide from anchor left/top.
+    Size an image at a fixed EMU-per-pixel scale (same scale for every
+    image in the batch), shrinking only if it would overflow the
+    available space -- never magnifying small images to fill it.
     """
-    slide_area = slide_w * slide_h
-    desired_area = slide_area * target_fraction
-
-    w = math.sqrt(desired_area * aspect)
-    h = math.sqrt(desired_area / aspect)
-
-    max_w = max(1, slide_w - left)
-    max_h = max(1, slide_h - top)
+    w = width_px * scale
+    h = height_px * scale
 
     if w > max_w or h > max_h:
-        scale = min(max_w / w, max_h / h)
-        w *= scale
-        h *= scale
+        shrink = min(max_w / w, max_h / h)
+        w *= shrink
+        h *= shrink
 
     return int(w), int(h)
 
@@ -224,27 +220,24 @@ def find_src_path(idx, src_basename):
     return None
 
 
-def place_image_on_slide(slide, image_path, anchor_left, anchor_top, slide_w, slide_h):
-    """Clean, crop, resize, and place image on slide."""
+def clean_image(image_path):
+    """Load, remove white background, and crop to content."""
     with Image.open(image_path) as im:
         cleaned = remove_white(im, thr=WHITE_THRESHOLD)
-        cleaned = crop_to_content_rgba(cleaned, pad_px=CROP_PAD_PX)
+    return crop_to_content_rgba(cleaned, pad_px=CROP_PAD_PX)
 
+
+def place_cleaned_image(slide, cleaned, anchor_left, anchor_top, slide_w, slide_h, scale):
+    """Place an already-cleaned image at a fixed scale, capped to fit the slide."""
     w_px, h_px = cleaned.size
 
     if h_px == 0:
         return False
 
-    aspect = w_px / h_px
+    max_w = max(1, slide_w - anchor_left)
+    max_h = max(1, slide_h - anchor_top)
 
-    w_emu, h_emu = compute_size_for_area_fraction(
-        slide_w,
-        slide_h,
-        anchor_left,
-        anchor_top,
-        aspect,
-        TARGET_FRACTION,
-    )
+    w_emu, h_emu = compute_fixed_scale_size(w_px, h_px, scale, max_w, max_h)
 
     buf = io.BytesIO()
     cleaned.save(buf, format="PNG")
@@ -366,10 +359,30 @@ if st.button("🚀 Generate PPT"):
                 question_placed = 0
                 solution_placed = 0
 
-                for row_position, row in df.iterrows():
-                    question_src_name = row["question_src_name"]
-                    question_src_path = find_src_path(idx, question_src_name)
+                # Resolve source paths and clean every distinct image once,
+                # so the placement scale can be calibrated from the whole batch
+                # instead of forcing each image to fill the same box area.
+                resolved_rows = []
+                cleaned_cache = {}
 
+                for row_position, row in df.iterrows():
+                    question_src_path = find_src_path(idx, row["question_src_name"])
+                    solution_src_path = None
+
+                    if include_solutions:
+                        solution_src_path = find_src_path(idx, row.get("solution_src_name", ""))
+
+                    resolved_rows.append((row_position, row, question_src_path, solution_src_path))
+
+                    for src_path in (question_src_path, solution_src_path):
+                        if src_path and src_path not in cleaned_cache:
+                            cleaned_cache[src_path] = clean_image(src_path)
+
+                heights = [img.size[1] for img in cleaned_cache.values() if img.size[1] > 0]
+                reference_height = statistics.median(heights) if heights else 1
+                scale = (slide_h * REFERENCE_HEIGHT_FRACTION) / reference_height
+
+                for row_position, row, question_src_path, solution_src_path in resolved_rows:
                     if include_solutions:
                         question_slide_index = row_position * 2
                     else:
@@ -378,13 +391,14 @@ if st.button("🚀 Generate PPT"):
                     question_slide = ensure_slide(question_slide_index)
 
                     if question_src_path:
-                        ok = place_image_on_slide(
+                        ok = place_cleaned_image(
                             question_slide,
-                            question_src_path,
+                            cleaned_cache[question_src_path],
                             ANCHOR_LEFT,
                             ANCHOR_TOP,
                             slide_w,
                             slide_h,
+                            scale,
                         )
 
                         if ok:
@@ -393,20 +407,18 @@ if st.button("🚀 Generate PPT"):
                         question_missing += 1
 
                     if include_solutions:
-                        solution_src_name = row.get("solution_src_name", "")
-                        solution_src_path = find_src_path(idx, solution_src_name)
-
                         solution_slide_index = question_slide_index + 1
                         solution_slide = ensure_slide(solution_slide_index)
 
                         if solution_src_path:
-                            ok = place_image_on_slide(
+                            ok = place_cleaned_image(
                                 solution_slide,
-                                solution_src_path,
+                                cleaned_cache[solution_src_path],
                                 ANCHOR_LEFT,
                                 ANCHOR_TOP,
                                 slide_w,
                                 slide_h,
+                                scale,
                             )
 
                             if ok:
