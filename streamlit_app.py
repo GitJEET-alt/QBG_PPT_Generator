@@ -92,8 +92,24 @@ st.markdown(
 st.title("📊 PPT Generator Tool")
 st.write("Upload a ZIP (images) and an XLSX (mapping) to generate a PPTX.")
 
-zip_file = st.file_uploader("Upload ZIP file", type=["zip"])
-xlsx_file = st.file_uploader("Upload XLSX file", type=["xlsx"])
+upload_mode = st.radio(
+    "File upload mode",
+    ["Separate ZIP + XLSX", "Combined ZIP (images + XLSX bundled)"],
+    horizontal=True,
+)
+
+zip_file = None
+xlsx_file = None
+combined_file = None
+
+if upload_mode == "Separate ZIP + XLSX":
+    zip_file = st.file_uploader("Upload ZIP file", type=["zip"])
+    xlsx_file = st.file_uploader("Upload XLSX file", type=["xlsx"])
+else:
+    combined_file = st.file_uploader(
+        "Upload combined ZIP (must contain one XLSX and one images ZIP)",
+        type=["zip"],
+    )
 
 include_solutions = st.checkbox("Include Solution Images")
 output_name_input = st.text_input(
@@ -194,6 +210,21 @@ def safe_extract(zipf: zipfile.ZipFile, dest_dir: str):
             dst.write(src.read())
 
 
+def split_combined_zip(combined_bytes):
+    """Pull the XLSX mapping and the images ZIP out of a combined bundle."""
+    with zipfile.ZipFile(io.BytesIO(combined_bytes), "r") as zf:
+        xlsx_name = next((n for n in zf.namelist() if n.lower().endswith(".xlsx")), None)
+        images_name = next((n for n in zf.namelist() if n.lower().endswith(".zip")), None)
+
+        if not xlsx_name:
+            raise RuntimeError("Combined ZIP must contain an XLSX mapping file.")
+
+        if not images_name:
+            raise RuntimeError("Combined ZIP must contain an images ZIP file.")
+
+        return zf.read(xlsx_name), zf.read(images_name)
+
+
 def build_basename_index(root_dir: str):
     """Index files by basename lowercase."""
     idx = {}
@@ -264,14 +295,27 @@ def place_cleaned_image(slide, cleaned, anchor_left, anchor_top, slide_w, slide_
 
 
 if st.button("🚀 Generate PPT"):
-    if not zip_file or not xlsx_file:
-        st.error("Please upload both ZIP and XLSX files.")
-        st.stop()
+    if upload_mode == "Separate ZIP + XLSX":
+        if not zip_file or not xlsx_file:
+            st.error("Please upload both ZIP and XLSX files.")
+            st.stop()
+    else:
+        if not combined_file:
+            st.error("Please upload the combined ZIP file.")
+            st.stop()
 
     try:
         with st.spinner("Processing..."):
+            if upload_mode == "Separate ZIP + XLSX":
+                xlsx_bytes = xlsx_file.getvalue()
+                images_zip_bytes = zip_file.getvalue()
+                default_name_source = zip_file.name
+            else:
+                xlsx_bytes, images_zip_bytes = split_combined_zip(combined_file.getvalue())
+                default_name_source = combined_file.name
+
             # Read mapping
-            df_raw = pd.read_excel(io.BytesIO(xlsx_file.getvalue()))
+            df_raw = pd.read_excel(io.BytesIO(xlsx_bytes))
 
             # Exact fixed column headers
             col_order = "Display Order*"
@@ -358,7 +402,7 @@ if st.button("🚀 Generate PPT"):
                 os.makedirs(src_dir, exist_ok=True)
 
                 # Unzip safely
-                with zipfile.ZipFile(io.BytesIO(zip_file.getvalue()), "r") as zf:
+                with zipfile.ZipFile(io.BytesIO(images_zip_bytes), "r") as zf:
                     safe_extract(zf, src_dir)
 
                 idx = build_basename_index(src_dir)
@@ -454,7 +498,7 @@ if st.button("🚀 Generate PPT"):
             )
 
         custom_name = sanitize_filename(output_name_input)
-        base_name = custom_name or os.path.splitext(zip_file.name)[0]
+        base_name = custom_name or os.path.splitext(default_name_source)[0]
 
         if not base_name.lower().endswith(".pptx"):
             base_name += ".pptx"
