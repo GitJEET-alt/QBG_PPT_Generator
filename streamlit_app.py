@@ -24,7 +24,7 @@ CROP_PAD_PX = 20
 # Fraction of slide height the median-complexity image in a batch should
 # occupy; used to derive one fixed pixel-to-EMU scale applied to every
 # image, instead of stretching each one to fill a fixed box.
-REFERENCE_HEIGHT_FRACTION = 0.35
+REFERENCE_HEIGHT_FRACTION = 0.455
 # ---------------------------
 
 
