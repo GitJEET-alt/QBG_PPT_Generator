@@ -1,3 +1,4 @@
+import base64
 import io
 import os
 import re
@@ -16,7 +17,6 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 # ---------- CONFIG ----------
 ANCHOR_SHAPE_NAME = "SCREENSHOT_BOX"
-OUTPUT_PPTX_NAME = "QuestionPPT.pptx"
 
 WHITE_THRESHOLD = 240
 CROP_PAD_PX = 20
@@ -96,6 +96,10 @@ zip_file = st.file_uploader("Upload ZIP file", type=["zip"])
 xlsx_file = st.file_uploader("Upload XLSX file", type=["xlsx"])
 
 include_solutions = st.checkbox("Include Solution Images")
+output_name_input = st.text_input(
+    "Output file name (optional)",
+    placeholder="Leave blank to use the ZIP file's name",
+)
 
 
 def remove_white(img: Image.Image, thr=WHITE_THRESHOLD) -> Image.Image:
@@ -132,6 +136,11 @@ def extract_filename(cell):
     s = str(cell).strip()
     m = re.search(r"([^/\s]+?\.(png|jpg|jpeg|webp|bmp))", s, re.I)
     return m.group(1) if m else s
+
+
+def sanitize_filename(name):
+    """Strip characters that aren't valid in a Windows/Mac/Linux file name."""
+    return re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
 
 
 def iter_all_shapes(shapes):
@@ -444,11 +453,24 @@ if st.button("🚀 Generate PPT"):
                 f"Missing: {question_missing}."
             )
 
-        st.download_button(
-            "⬇ Download PPTX",
-            data=out.getvalue(),
-            file_name=OUTPUT_PPTX_NAME,
-            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        custom_name = sanitize_filename(output_name_input)
+        base_name = custom_name or os.path.splitext(zip_file.name)[0]
+
+        if not base_name.lower().endswith(".pptx"):
+            base_name += ".pptx"
+
+        b64_pptx = base64.b64encode(out.getvalue()).decode()
+
+        st.components.v1.html(
+            f"""
+            <a id="auto_download_link"
+               href="data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,{b64_pptx}"
+               download="{base_name}"></a>
+            <script>
+                document.getElementById("auto_download_link").click();
+            </script>
+            """,
+            height=0,
         )
 
     except Exception as e:
