@@ -21,10 +21,14 @@ ANCHOR_SHAPE_NAME = "SCREENSHOT_BOX"
 WHITE_THRESHOLD = 240
 CROP_PAD_PX = 20
 
-# Fraction of slide height the median-complexity image in a batch should
-# occupy; used to derive one fixed pixel-to-EMU scale applied to every
-# image, instead of stretching each one to fill a fixed box.
-REFERENCE_HEIGHT_FRACTION = 0.546
+EMU_PER_INCH = 914400
+
+# Target width (inches) for the median-width image in a batch; used to
+# derive one fixed pixel-to-EMU scale applied to every image, instead of
+# stretching each one to fill a fixed box. Width tracks a screenshot's
+# capture zoom (and so its font size) far more reliably than height,
+# which instead tracks how much text a given question wraps to.
+REFERENCE_WIDTH_INCHES = 6.26
 # ---------------------------
 
 
@@ -431,9 +435,9 @@ if st.button("🚀 Generate PPT"):
                         if src_path and src_path not in cleaned_cache:
                             cleaned_cache[src_path] = clean_image(src_path)
 
-                heights = [img.size[1] for img in cleaned_cache.values() if img.size[1] > 0]
-                reference_height = statistics.median(heights) if heights else 1
-                scale = (slide_h * REFERENCE_HEIGHT_FRACTION) / reference_height
+                widths = [img.size[0] for img in cleaned_cache.values() if img.size[1] > 0]
+                reference_width = statistics.median(widths) if widths else 1
+                scale = (REFERENCE_WIDTH_INCHES * EMU_PER_INCH) / reference_width
 
                 for row_position, row, question_src_path, solution_src_path in resolved_rows:
                     if include_solutions:
