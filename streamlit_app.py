@@ -1,4 +1,5 @@
 import base64
+import copy
 import io
 import os
 import re
@@ -483,9 +484,23 @@ if st.button("🚀 Generate PPT"):
             # Use layout of slide 1
             template_layout = prs.slides[0].slide_layout
 
+            # Snapshot slide 1's actual shapes (background, borders, logo,
+            # etc.) so every newly created slide matches it exactly.
+            # add_slide() on its own instead populates a new slide with the
+            # layout's default placeholder shapes (e.g. "Click to add
+            # title"), even ones that were deleted from slide 1 itself.
+            source_slide_shapes = [copy.deepcopy(shp._element) for shp in prs.slides[0].shapes]
+
             def ensure_slide(i0):
                 while len(prs.slides) <= i0:
-                    prs.slides.add_slide(template_layout)
+                    new_slide = prs.slides.add_slide(template_layout)
+
+                    for shp in list(new_slide.shapes):
+                        new_slide.shapes._spTree.remove(shp._element)
+
+                    for el in source_slide_shapes:
+                        new_slide.shapes._spTree.append(copy.deepcopy(el))
+
                 return prs.slides[i0]
 
             slide_w = prs.slide_width
