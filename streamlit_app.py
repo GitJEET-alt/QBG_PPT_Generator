@@ -227,6 +227,45 @@ def find_anchor_on_slide(slide, name):
     return None
 
 
+def snapshot_slide_design(source_slide):
+    """
+    Capture a slide's shape XML and relationships (e.g. embedded images)
+    before any further modification. This is what gets stamped onto every
+    subsequently created slide -- taking it now, before any content is
+    placed on the source slide, ensures we don't carry over per-slide
+    content like the first question's own image. Relationships matter
+    because a shape referencing a picture via r:embed points at a
+    relationship ID that's meaningless on any other slide unless that
+    relationship is copied over too -- otherwise the image silently fails
+    to resolve on every slide but the first.
+    """
+    shape_xmls = [copy.deepcopy(shp._element) for shp in source_slide.shapes]
+    rels = [
+        (rel.reltype, rel._target)
+        for _, rel in source_slide.part.rels.items()
+        if "notesSlide" not in rel.reltype
+    ]
+    return shape_xmls, rels
+
+
+def apply_slide_design(dest_slide, shape_xmls, rels):
+    """Stamp a captured design (shapes + their relationships) onto a freshly added slide."""
+    dest_spTree = dest_slide.shapes._spTree
+
+    for ph in list(dest_slide.placeholders):
+        ph_el = ph._element
+        ph_el.getparent().remove(ph_el)
+
+    for el in shape_xmls:
+        dest_spTree.append(copy.deepcopy(el))
+
+    for reltype, target in rels:
+        try:
+            dest_slide.part.rels.get_or_add(reltype, target)
+        except Exception:
+            pass
+
+
 def compute_fixed_scale_size(width_px, height_px, scale, max_w, max_h):
     """
     Size an image at a fixed EMU-per-pixel scale (same scale for every
@@ -484,22 +523,17 @@ if st.button("🚀 Generate PPT"):
             # Use layout of slide 1
             template_layout = prs.slides[0].slide_layout
 
-            # Snapshot slide 1's actual shapes (background, borders, logo,
+            # Snapshot slide 1's actual design (background, borders, logo,
             # etc.) so every newly created slide matches it exactly.
             # add_slide() on its own instead populates a new slide with the
             # layout's default placeholder shapes (e.g. "Click to add
             # title"), even ones that were deleted from slide 1 itself.
-            source_slide_shapes = [copy.deepcopy(shp._element) for shp in prs.slides[0].shapes]
+            design_shapes, design_rels = snapshot_slide_design(prs.slides[0])
 
             def ensure_slide(i0):
                 while len(prs.slides) <= i0:
                     new_slide = prs.slides.add_slide(template_layout)
-
-                    for shp in list(new_slide.shapes):
-                        new_slide.shapes._spTree.remove(shp._element)
-
-                    for el in source_slide_shapes:
-                        new_slide.shapes._spTree.append(copy.deepcopy(el))
+                    apply_slide_design(new_slide, design_shapes, design_rels)
 
                 return prs.slides[i0]
 
