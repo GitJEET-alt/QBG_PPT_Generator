@@ -27,12 +27,15 @@ INK_ROW_THRESHOLD = 180
 MIN_BAND_PX = 3
 MAX_BAND_PX = 60
 
-# Target height (inches) for a typical text line, measured directly from
-# each image's own pixel content (see estimate_line_height_px). Used to
-# derive one fixed pixel-to-EMU scale applied to every image in a batch,
-# instead of stretching each one to fill a fixed box or inferring font
-# size indirectly from overall image width/height.
-TARGET_LINE_HEIGHT_INCHES = 0.272
+# Selectable target heights (inches) for a typical text line, measured
+# directly from each image's own pixel content (see
+# estimate_line_height_px). Used to derive one fixed pixel-to-EMU scale
+# applied to every image in a batch, instead of stretching each one to
+# fill a fixed box or inferring font size indirectly from overall image
+# width/height. Smaller values need less magnification of the source
+# screenshots, so they show less pixelation.
+FONT_SIZE_OPTIONS = [0.200, 0.240, 0.272]
+DEFAULT_FONT_SIZE_INCHES = 0.272
 # ---------------------------
 
 
@@ -120,6 +123,12 @@ else:
     )
 
 include_solutions = st.checkbox("Include Solution Images")
+target_line_height_inches = st.selectbox(
+    "Font size (typical text line height)",
+    options=FONT_SIZE_OPTIONS,
+    index=FONT_SIZE_OPTIONS.index(DEFAULT_FONT_SIZE_INCHES),
+    format_func=lambda v: f"{v}in (~{v * 72:.1f}pt)" + (" - default" if v == DEFAULT_FONT_SIZE_INCHES else ""),
+)
 output_name_input = st.text_input(
     "Output file name (optional)",
     placeholder="Leave blank to use the ZIP file's name",
@@ -472,7 +481,7 @@ if st.button("🚀 Generate PPT"):
                 line_heights = [estimate_line_height_px(img) for img in cleaned_cache.values()]
                 line_heights = [h for h in line_heights if h]
                 reference_line_height = statistics.median(line_heights) if line_heights else 20
-                scale = (TARGET_LINE_HEIGHT_INCHES * EMU_PER_INCH) / reference_line_height
+                scale = (target_line_height_inches * EMU_PER_INCH) / reference_line_height
 
                 for row_position, row, question_src_path, solution_src_path in resolved_rows:
                     if include_solutions:
