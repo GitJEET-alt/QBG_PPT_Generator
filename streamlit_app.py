@@ -120,6 +120,22 @@ else:
     )
 
 include_solutions = st.checkbox("Include Solution Images")
+
+custom_color_enabled = st.checkbox("Custom text color")
+text_color_hex = None
+
+if custom_color_enabled:
+    text_color_hex = st.color_picker("Text color", value="#000000")
+    st.caption("Tints dark/grayscale pixels (text) toward this color. Colorful diagrams are left alone.")
+
+custom_template_file = st.file_uploader(
+    "Custom PPT template (optional)",
+    type=["pptx"],
+    help=f"Must have at least one slide. Question images are placed using the default "
+         f"template's '{ANCHOR_SHAPE_NAME}' position, scaled to this template's slide size "
+         f"-- no anchor shape needed in the custom file itself.",
+)
+
 output_name_input = st.text_input(
     "Output file name (optional)",
     placeholder="Leave blank to use the ZIP file's name",
@@ -133,6 +149,35 @@ def remove_white(img: Image.Image, thr=WHITE_THRESHOLD) -> Image.Image:
     mask = (rgb >= thr).all(axis=2)
     rgba[mask, 3] = 0
     return Image.fromarray(rgba, "RGBA")
+
+
+def hex_to_rgb(hex_color):
+    hex_color = hex_color.lstrip("#")
+    return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def recolor_text(cleaned_rgba, hex_color, saturation_threshold=30):
+    """
+    Tint dark/grayscale ("ink") pixels toward hex_color, blending by how
+    dark each pixel originally was so anti-aliased edges stay smooth.
+    Colorful pixels (diagrams, highlights) are left untouched so this
+    only affects text and black-and-white line art.
+    """
+    rgba = np.array(cleaned_rgba).astype(float)
+    rgb = rgba[:, :, :3]
+
+    max_c = rgb.max(axis=2)
+    min_c = rgb.min(axis=2)
+    is_ink = (max_c - min_c) <= saturation_threshold
+
+    darkness = 1 - (max_c / 255.0)
+    target = np.array(hex_to_rgb(hex_color), dtype=float)
+
+    blended = 255 * (1 - darkness[..., None]) + target[None, None, :] * darkness[..., None]
+    rgb = np.where(is_ink[..., None], blended, rgb)
+
+    rgba[:, :, :3] = np.clip(rgb, 0, 255)
+    return Image.fromarray(rgba.astype(np.uint8), "RGBA")
 
 
 def crop_to_content_rgba(img_rgba: Image.Image, pad_px=CROP_PAD_PX) -> Image.Image:
@@ -305,7 +350,7 @@ def clean_image(image_path):
     return crop_to_content_rgba(cleaned, pad_px=CROP_PAD_PX)
 
 
-def place_cleaned_image(slide, cleaned, anchor_left, anchor_top, slide_w, slide_h, scale):
+def place_cleaned_image(slide, cleaned, anchor_left, anchor_top, slide_w, slide_h, scale, text_color=None):
     """Place an already-cleaned image at a fixed scale, capped to fit the slide."""
     w_px, h_px = cleaned.size
 
@@ -317,8 +362,10 @@ def place_cleaned_image(slide, cleaned, anchor_left, anchor_top, slide_w, slide_
 
     w_emu, h_emu = compute_fixed_scale_size(w_px, h_px, scale, max_w, max_h)
 
+    to_save = recolor_text(cleaned, text_color) if text_color else cleaned
+
     buf = io.BytesIO()
-    cleaned.save(buf, format="PNG")
+    to_save.save(buf, format="PNG")
     buf.seek(0)
 
     slide.shapes.add_picture(
@@ -405,13 +452,33 @@ if st.button("🚀 Generate PPT"):
 
             df = df.sort_values("display_order").reset_index(drop=True)
 
-            # Load template
-            template_path = "template.pptx"
+            # Load the default template to read the anchor's position as a
+            # percentage of the slide. A custom template reuses this same
+            # relative position, so it doesn't need its own anchor shape.
+            default_template_path = "template.pptx"
 
-            if not os.path.exists(template_path):
+            if not os.path.exists(default_template_path):
                 raise FileNotFoundError("template.pptx not found in app directory.")
 
-            prs = Presentation(template_path)
+            default_prs = Presentation(default_template_path)
+            default_anchor = find_anchor_on_slide(default_prs.slides[0], ANCHOR_SHAPE_NAME)
+
+            if default_anchor is None:
+                raise RuntimeError(
+                    f"Anchor '{ANCHOR_SHAPE_NAME}' not found on the default template's "
+                    f"slide 1. Rename via Selection Pane."
+                )
+
+            anchor_left_pct = default_anchor.left / default_prs.slide_width
+            anchor_top_pct = default_anchor.top / default_prs.slide_height
+
+            if custom_template_file:
+                prs = Presentation(io.BytesIO(custom_template_file.getvalue()))
+
+                if len(prs.slides) == 0:
+                    raise RuntimeError("Custom template must have at least one slide.")
+            else:
+                prs = default_prs
 
             # Use layout of slide 1
             template_layout = prs.slides[0].slide_layout
@@ -421,19 +488,10 @@ if st.button("🚀 Generate PPT"):
                     prs.slides.add_slide(template_layout)
                 return prs.slides[i0]
 
-            # Anchor from slide 1
-            anchor0 = find_anchor_on_slide(prs.slides[0], ANCHOR_SHAPE_NAME)
-
-            if anchor0 is None:
-                raise RuntimeError(
-                    f"Anchor '{ANCHOR_SHAPE_NAME}' not found on template slide 1. "
-                    f"Rename via Selection Pane."
-                )
-
-            ANCHOR_LEFT = anchor0.left
-            ANCHOR_TOP = anchor0.top
             slide_w = prs.slide_width
             slide_h = prs.slide_height
+            ANCHOR_LEFT = int(slide_w * anchor_left_pct)
+            ANCHOR_TOP = int(slide_h * anchor_top_pct)
 
             with tempfile.TemporaryDirectory(prefix="pptgen_") as tmpdir:
                 src_dir = os.path.join(tmpdir, "src")
@@ -491,6 +549,7 @@ if st.button("🚀 Generate PPT"):
                             slide_w,
                             slide_h,
                             scale,
+                            text_color_hex,
                         )
 
                         if ok:
@@ -511,6 +570,7 @@ if st.button("🚀 Generate PPT"):
                                 slide_w,
                                 slide_h,
                                 scale,
+                                text_color_hex,
                             )
 
                             if ok:
